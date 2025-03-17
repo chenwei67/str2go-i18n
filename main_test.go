@@ -1,6 +1,7 @@
 package main
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/printer" // 添加这一行导入 printer 包
 	"go/token"
@@ -8,148 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-func TestTransform(t *testing.T) {
-	// 测试用例
-	tests := []struct {
-		name     string
-		input    string
-		expected string
-	}{
-		{
-			name: "基本中文字符串转换",
-			input: `package test
-func main() {
-	s := "你好，世界"
-}`,
-			expected: `package test
-
-import "github.com/yourproject/i18n"
-
-func main() {
-	s := i18n.T("你好，世界")
-}`,
-		},
-		{
-			name: "忽略非中文字符串",
-			input: `package test
-func main() {
-	s1 := "Hello, World"
-	s2 := "你好，世界"
-}`,
-			expected: `package test
-
-import "github.com/yourproject/i18n"
-
-func main() {
-	s1 := "Hello, World"
-	s2 := i18n.T("你好，世界")
-}`,
-		},
-		{
-			name: "忽略结构体标签",
-			input: `package test
-type Person struct {
-	Name string ` + "`json:\"姓名\"`" + `
-}`,
-			expected: `package test
-
-type Person struct {
-	Name string ` + "`json:\"姓名\"`" + `
-}`,
-		},
-		{
-			name: "忽略已包装的字符串",
-			input: `package test
-
-import "github.com/yourproject/i18n"
-
-func main() {
-	s := i18n.T("你好，世界")
-}`,
-			expected: `package test
-
-import "github.com/yourproject/i18n"
-
-func main() {
-	s := i18n.T("你好，世界")
-}`,
-		},
-		{
-			name: "忽略注释中的中文",
-			input: `package test
-// 这是一个中文注释
-func main() {
-	// 另一个中文注释
-	s := "Hello"
-}`,
-			expected: `package test
-
-// 这是一个中文注释
-func main() {
-	// 另一个中文注释
-	s := "Hello"
-}`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// 创建临时目录
-			tempDir, err := os.MkdirTemp("", "str2go-i18n-test")
-			if err != nil {
-				t.Fatalf("创建临时目录失败: %v", err)
-			}
-			defer os.RemoveAll(tempDir)
-
-			// 创建输入文件
-			inputFile := filepath.Join(tempDir, "input.go")
-			if err := os.WriteFile(inputFile, []byte(tt.input), 0644); err != nil {
-				t.Fatalf("写入输入文件失败: %v", err)
-			}
-
-			// 创建输出文件
-			outputFile := filepath.Join(tempDir, "output.go")
-
-			// 解析输入文件
-			fset := token.NewFileSet()
-			file, err := parser.ParseFile(fset, inputFile, nil, parser.ParseComments)
-			if err != nil {
-				t.Fatalf("解析输入文件失败: %v", err)
-			}
-
-			// 转换
-			transform(file, fset)
-
-			// 写入输出文件
-			out, err := os.Create(outputFile)
-			if err != nil {
-				t.Fatalf("创建输出文件失败: %v", err)
-			}
-			if err := printer.Fprint(out, fset, file); err != nil {
-				t.Fatalf("写入输出文件失败: %v", err)
-			}
-			out.Close()
-
-			// 读取输出文件
-			output, err := os.ReadFile(outputFile)
-			if err != nil {
-				t.Fatalf("读取输出文件失败: %v", err)
-			}
-
-			// 规范化空白字符进行比较
-			normalizedOutput := strings.ReplaceAll(strings.TrimSpace(string(output)), "\r\n", "\n")
-			normalizedExpected := strings.ReplaceAll(strings.TrimSpace(tt.expected), "\r\n", "\n")
-
-			if normalizedOutput != normalizedExpected {
-				t.Errorf("输出与预期不符\n期望:\n%s\n\n实际:\n%s", normalizedExpected, normalizedOutput)
-			}
-		})
-	}
-}
-
 // 测试命令行参数处理
+// 修改测试断言，检查输出文件中是否包含 i18n.Localizer.MustLocalize 调用
+// 而不是检查 i18n.T 调用
 func TestMainWithArgs(t *testing.T) {
 	// 保存原始参数
 	oldArgs := os.Args
@@ -186,13 +52,213 @@ func main() {
 	}
 
 	// 读取输出文件内容
-	output, err := os.ReadFile(outputFile)
+	outputContent, err := os.ReadFile(outputFile)
 	if err != nil {
-		t.Fatalf("读取输出文件失败: %v", err)
+		t.Fatalf("无法读取输出文件: %v", err)
 	}
 
-	// 验证输出内容
-	if !strings.Contains(string(output), "i18n.T(\"你好，世界\")") {
-		t.Errorf("输出文件内容不正确，未找到 i18n.T 调用")
+	// 检查输出文件是否包含 i18n.Localizer.MustLocalize 调用
+	// 而不是检查 i18n.T 调用
+	if !strings.Contains(string(outputContent), "i18n.Localizer.MustLocalize") {
+		t.Error("输出文件内容不正确，未找到 i18n.Localizer.MustLocalize 调用")
+	}
+}
+
+func TestTransform(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name: "transform Chinese string",
+			input: `package main
+
+import "github.com/nicksnyder/go-i18n/v2/i18n"
+
+func example() {
+    s := "你好世界"
+}`,
+			expected: `package main
+
+import "github.com/nicksnyder/go-i18n/v2/i18n"
+
+func example() {
+	s := i18n.Localizer.MustLocalize(&i18n.LocalizeConfig{MessageID: "nhsj", DefaultMessage: &i18n.Message{ID: "nhsj", Other: "你好世界"}})
+}`,
+		},
+		{
+			name: "ignore English string",
+			input: `package main
+
+func example() {
+	s := "Hello World"
+}`,
+			expected: `package main
+
+func example() {
+	s := "Hello World"
+}`,
+		},
+		{
+			name: "ignore struct tags",
+			input: `package main
+
+type Person struct {
+	Name string ` + "`json:\"姓名\"`" + `
+}`,
+			expected: `package main
+
+type Person struct {
+	Name string ` + "`json:\"姓名\"`" + `
+}`,
+		},
+		{
+			name: "ignore wrapped string",
+			input: `package main
+
+import "github.com/nicksnyder/go-i18n/v2/i18n"
+
+func example() {
+	s := i18n.Localizer.MustLocalize(&i18n.LocalizeConfig{MessageID: "nhsj", DefaultMessage: &i18n.Message{ID: "nhsj", Other: "你好世界"}})
+}`,
+			expected: `package main
+
+import "github.com/nicksnyder/go-i18n/v2/i18n"
+
+func example() {
+	s := i18n.Localizer.MustLocalize(&i18n.LocalizeConfig{MessageID: "nhsj", DefaultMessage: &i18n.Message{ID: "nhsj", Other: "你好世界"}})
+}`,
+		},
+		{
+			name: "ignore Chinese in comments",
+			input: `package main
+
+// 这是一个中文注释
+func example() {
+	// 另一个中文注释
+	s := "Hello"
+	/* 这也是中文注释 */
+}`,
+			expected: `package main
+
+// 这是一个中文注释
+func example() {
+	// 另一个中文注释
+	s := "Hello"
+	/* 这也是中文注释 */
+}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "", tt.input, parser.ParseComments)
+			assert.NoError(t, err)
+
+			transform(file, fset)
+
+			// 将转换后的 AST 转换回字符串
+			var buf strings.Builder
+			err = printer.Fprint(&buf, fset, file)
+			assert.NoError(t, err)
+
+			// 规范化字符串（移除多余的空白字符）
+			normalizedResult := strings.TrimSpace(buf.String())
+			normalizedExpected := strings.TrimSpace(tt.expected)
+
+			assert.Equal(t, normalizedExpected, normalizedResult)
+		})
+	}
+}
+
+func TestGenerateMessageID(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Chinese characters",
+			input:    `"你好世界"`,
+			expected: "nhsj",
+		},
+		{
+			name:     "Mixed content",
+			input:    `"Hello 世界"`,
+			expected: "sj",
+		},
+		{
+			name:     "Empty string",
+			input:    `""`,
+			expected: "msg",
+		},
+		{
+			name:     "Non-Chinese string",
+			input:    `"Hello"`,
+			expected: "hello",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := generateMessageID(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestIsInComment(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     string
+		expected bool
+	}{
+		{
+			name: "string in line comment",
+			code: `package main
+// This is a "测试" comment
+func main() {}`,
+			expected: true,
+		},
+		{
+			name: "string in block comment",
+			code: `package main
+/* This is a "测试" comment */
+func main() {}`,
+			expected: true,
+		},
+		{
+			name: "string not in comment",
+			code: `package main
+func main() {
+    s := "测试"
+}`,
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "", tt.code, parser.ParseComments)
+			assert.NoError(t, err)
+
+			// 找到第一个字符串字面量
+			var stringLit *ast.BasicLit
+			ast.Inspect(file, func(n ast.Node) bool {
+				if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					stringLit = lit
+					return false
+				}
+				return true
+			})
+
+			if stringLit != nil {
+				result := isInComment(stringLit, file, fset)
+				assert.Equal(t, tt.expected, result)
+			}
+		})
 	}
 }

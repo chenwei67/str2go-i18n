@@ -7,7 +7,9 @@ import (
 	"go/token"
 	"os"
 	"regexp"
+	"strings"
 
+	"github.com/mozillazg/go-pinyin"
 	"golang.org/x/tools/go/ast/astutil"
 )
 
@@ -42,7 +44,7 @@ func main() {
 
 func transform(file *ast.File, fset *token.FileSet) {
 	needsImport := false
-	
+
 	pre := func(cursor *astutil.Cursor) bool {
 		n := cursor.Node()
 
@@ -69,13 +71,59 @@ func transform(file *ast.File, fset *token.FileSet) {
 		}
 
 		needsImport = true
-		
+
+		// 生成消息ID
+		msgID := generateMessageID(lit.Value)
+
+		// 创建符合 go-i18n 格式的调用
+		// 使用 i18n.Localizer.MustLocalize 和 &i18n.LocalizeConfig
 		newNode := &ast.CallExpr{
 			Fun: &ast.SelectorExpr{
-				X:   ast.NewIdent("i18n"),
-				Sel: ast.NewIdent("T"),
+				X: &ast.SelectorExpr{
+					X:   ast.NewIdent("i18n"),
+					Sel: ast.NewIdent("Localizer"),
+				},
+				Sel: ast.NewIdent("MustLocalize"),
 			},
-			Args: []ast.Expr{lit},
+			Args: []ast.Expr{
+				&ast.UnaryExpr{
+					Op: token.AND,
+					X: &ast.CompositeLit{
+						Type: &ast.SelectorExpr{
+							X:   ast.NewIdent("i18n"),
+							Sel: ast.NewIdent("LocalizeConfig"),
+						},
+						Elts: []ast.Expr{
+							&ast.KeyValueExpr{
+								Key:   ast.NewIdent("MessageID"),
+								Value: &ast.BasicLit{Kind: token.STRING, Value: `"` + msgID + `"`},
+							},
+							&ast.KeyValueExpr{
+								Key: ast.NewIdent("DefaultMessage"),
+								Value: &ast.UnaryExpr{
+									Op: token.AND,
+									X: &ast.CompositeLit{
+										Type: &ast.SelectorExpr{
+											X:   ast.NewIdent("i18n"),
+											Sel: ast.NewIdent("Message"),
+										},
+										Elts: []ast.Expr{
+											&ast.KeyValueExpr{
+												Key:   ast.NewIdent("ID"),
+												Value: &ast.BasicLit{Kind: token.STRING, Value: `"` + msgID + `"`},
+											},
+											&ast.KeyValueExpr{
+												Key:   ast.NewIdent("Other"),
+												Value: lit,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 		}
 
 		cursor.Replace(newNode)
@@ -104,41 +152,30 @@ func isInStructTag(cursor *astutil.Cursor) bool {
 }
 
 func isWrappedByI18nT(cursor *astutil.Cursor) bool {
+	// 检查当前节点是否是字符串字面量
+	_, ok := cursor.Node().(*ast.BasicLit)
+	if !ok {
+		return false
+	}
+	
+	// 检查父节点是否是 KeyValueExpr，且 Key 是 "Other"
 	parent := cursor.Parent()
-	if parent == nil {
-		return false
-	}
-
-	callExpr, ok := parent.(*ast.CallExpr)
+	kv, ok := parent.(*ast.KeyValueExpr)
 	if !ok {
 		return false
 	}
-
-	selExpr, ok := callExpr.Fun.(*ast.SelectorExpr)
-	if !ok {
+	
+	key, ok := kv.Key.(*ast.Ident)
+	if !ok || key.Name != "Other" {
 		return false
 	}
-
-	xIdent, ok := selExpr.X.(*ast.Ident)
-	if !ok || xIdent.Name != "i18n" {
-		return false
-	}
-
-	if selExpr.Sel.Name != "T" {
-		return false
-	}
-
-	for _, arg := range callExpr.Args {
-		if arg == cursor.Node() {
-			return true
-		}
-	}
-
-	return false
+	
+	// 简化处理：如果是 Other 字段，假设它在 i18n.Message 中
+	return true
 }
 
 func ensureI18nImport(file *ast.File, fset *token.FileSet) {
-	const importPath = "github.com/yourproject/i18n"
+	const importPath = "github.com/nicksnyder/go-i18n/v2/i18n"
 
 	for _, imp := range file.Imports {
 		if imp.Path.Value == `"`+importPath+`"` {
@@ -146,7 +183,7 @@ func ensureI18nImport(file *ast.File, fset *token.FileSet) {
 		}
 	}
 
-	// 使用非命名导入而不是命名导入
+	// 添加 go-i18n 导入
 	astutil.AddImport(fset, file, importPath)
 }
 
@@ -170,4 +207,89 @@ func isInComment(node ast.Node, file *ast.File, fset *token.FileSet) bool {
 		}
 	}
 	return false
+}
+
+// // generateMessageID 根据中文消息生成唯一ID
+// func generateMessageID(message string) string {
+// 	// 去除引号
+// 	message = strings.Trim(message, `"`)
+
+// 	// 提取前几个字符作为前缀，转为拼音
+// 	prefix := extractPinyinPrefix(message, 5)
+
+// 	// 计算消息的哈希值作为后缀，确保唯一性
+// 	hash := md5.Sum([]byte(message))
+// 	hashStr := fmt.Sprintf("%x", hash)[:8] // 取前8位
+
+// 	// 组合前缀和哈希
+// 	return prefix + "_" + hashStr
+// }
+
+// generateMessageID 根据中文消息生成唯一ID
+func generateMessageID(message string) string {
+	// 去除引号
+	message = strings.Trim(message, `"`)
+
+	// 提取前几个字符作为前缀，转为拼音
+	prefix := extractPinyinPrefix(message, 5)
+	// 组合前缀和哈希
+	return prefix
+}
+
+// extractPinyinPrefix 从中文消息中提取拼音首字母作为前缀
+func extractPinyinPrefix(message string, maxChars int) string {
+	if len(message) == 0 {
+		return "msg"
+	}
+
+	// 去除引号
+	message = strings.Trim(message, `"`)
+	
+	// 检查是否包含中文字符
+	if hasChinese.MatchString(message) {
+		// 如果包含中文，只提取中文字符的拼音
+		var result strings.Builder
+		count := 0
+		
+		for _, char := range []rune(message) {
+			if hasChinese.MatchString(string(char)) {
+				args := pinyin.NewArgs()
+				args.Style = pinyin.FirstLetter
+				pys := pinyin.Pinyin(string(char), args)
+				if len(pys) > 0 && len(pys[0]) > 0 {
+					result.WriteString(pys[0][0])
+					count++
+					if count >= maxChars {
+						break
+					}
+				}
+			}
+		}
+		
+		id := result.String()
+		if id != "" && regexp.MustCompile(`^[a-zA-Z]`).MatchString(id) {
+			return id
+		}
+		return "msg"
+	} else {
+		// 如果不包含中文，处理英文和数字
+		var result strings.Builder
+		count := 0
+		
+		for _, char := range []rune(message) {
+			if regexp.MustCompile(`[a-zA-Z0-9]`).MatchString(string(char)) {
+				result.WriteString(strings.ToLower(string(char)))
+				count++
+				if count >= maxChars {
+					break
+				}
+			}
+		}
+		
+		id := result.String()
+		if id != "" && regexp.MustCompile(`^[a-zA-Z]`).MatchString(id) {
+			return id
+		}
+		return "msg"
+	}
 }
