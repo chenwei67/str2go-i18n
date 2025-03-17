@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
-	"go/printer" // 添加这一行导入 printer 包
+	"go/printer"
 	"go/token"
+	"io" // 添加这一行导入 io 包
 	"os"
 	"path/filepath"
 	"strings"
@@ -258,6 +260,92 @@ func main() {
 			if stringLit != nil {
 				result := isInComment(stringLit, file, fset)
 				assert.Equal(t, tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestCollectAndPrintChineseStrings(t *testing.T) {
+	tests := []struct {
+		name            string
+		input           string
+		expectedCount   int
+		expectedStrings []string
+	}{
+		{
+			name: "collect Chinese strings",
+			input: `package main
+
+func example() {
+    s1 := "你好世界"
+    s2 := "Hello World"
+    s3 := "中文字符串"
+	s3 := "有占位符的中文串%s"
+	s4 := "ff混合23"
+}`,
+			expectedCount:   4,
+			expectedStrings: []string{"你好世界", "中文字符串", "有占位符的中文串%s", "ff混合23"},
+		},
+		{
+			name: "ignore Chinese in comments",
+			input: `package main
+
+// 这是一个中文注释
+func example() {
+    s := "Hello"
+    /* 这也是中文注释 */
+}`,
+			expectedCount:   0,
+			expectedStrings: []string{},
+		},
+		{
+			name: "ignore Chinese in struct tags",
+			input: `package main
+
+type Person struct {
+    Name string ` + "`json:\"姓名\"`" + `
+}`,
+			expectedCount:   0,
+			expectedStrings: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "", tt.input, parser.ParseComments)
+			assert.NoError(t, err)
+
+			// 重定向标准输出以捕获打印内容
+			oldStdout := os.Stdout
+			r, w, _ := os.Pipe()
+			os.Stdout = w
+
+			// 调用函数
+			result := collectAndPrintChineseStrings(file)
+
+			// 恢复标准输出
+			w.Close()
+			os.Stdout = oldStdout
+
+			// 读取捕获的输出
+			var buf bytes.Buffer
+			io.Copy(&buf, r)
+			output := buf.String()
+
+			// 验证结果
+			assert.Equal(t, tt.expectedCount, len(result), "收集到的中文字符串数量不匹配")
+			assert.Equal(t, tt.expectedStrings, result, "收集到的中文字符串不匹配")
+
+			// 验证输出包含预期信息
+			if tt.expectedCount > 0 {
+				assert.Contains(t, output, "找到以下中文字符串:", "输出应包含提示信息")
+				t.Logf("%v", output)
+				for _, str := range tt.expectedStrings {
+					assert.Contains(t, output, str, "输出应包含中文字符串")
+				}
+			} else {
+				assert.Contains(t, output, "未找到中文字符串", "输出应包含未找到的提示")
 			}
 		})
 	}

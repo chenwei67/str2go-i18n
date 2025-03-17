@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/printer"
@@ -11,10 +12,42 @@ import (
 
 	"github.com/mozillazg/go-pinyin"
 	"golang.org/x/tools/go/ast/astutil"
+	"unicode"
 )
 
 var hasChinese = regexp.MustCompile(`\p{Han}`)
 
+// 添加一个函数用于收集并输出中文字符串
+func collectAndPrintChineseStrings(file *ast.File) []string {
+	// 初始化为空切片而不是 nil
+	chineseStrings := []string{}
+	
+	ast.Inspect(file, func(n ast.Node) bool {
+		if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+			// 检查是否是中文字符串
+			if containsChinese(lit.Value) && !isInComment(lit, file, token.NewFileSet()) && !isInStructTagBasicLit(lit, file) {
+				// 去除引号
+				strValue := strings.Trim(lit.Value, "`\"")
+				chineseStrings = append(chineseStrings, strValue)
+			}
+		}
+		return true
+	})
+	
+	// 输出找到的中文字符串
+	if len(chineseStrings) > 0 {
+		fmt.Println("找到以下中文字符串:")
+		for i, str := range chineseStrings {
+			fmt.Printf("%d. %s\n", i+1, str)
+		}
+	} else {
+		fmt.Println("未找到中文字符串")
+	}
+	
+	return chineseStrings
+}
+
+// 修改 main 函数，在转换前输出中文字段
 func main() {
 	if len(os.Args) != 3 {
 		println("Usage: transform <input.go> <output.go>")
@@ -26,9 +59,15 @@ func main() {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, inputFile, nil, parser.ParseComments)
 	if err != nil {
-		panic(err)
+		fmt.Printf("解析文件失败: %v\n", err)
+		return
 	}
-
+	
+	// 在转换前收集并输出中文字符串
+	fmt.Printf("正在分析文件: %s\n", inputFile)
+	collectAndPrintChineseStrings(file)
+	
+	// 转换文件
 	transform(file, fset)
 
 	out, err := os.Create(outputFile)
@@ -292,4 +331,34 @@ func extractPinyinPrefix(message string, maxChars int) string {
 		}
 		return "msg"
 	}
+}
+
+// containsChinese 检查字符串是否包含中文字符
+func containsChinese(s string) bool {
+	// 去除字符串两端的引号
+	s = strings.Trim(s, "`\"")
+	
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// isInStructTagBasicLit 检查给定的 BasicLit 是否位于结构体标签中
+func isInStructTagBasicLit(lit *ast.BasicLit, file *ast.File) bool {
+	// 遍历所有结构体字段
+	var result bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		if field, ok := n.(*ast.Field); ok && field.Tag != nil {
+			// 检查标签是否就是当前的字符串字面量
+			if field.Tag == lit {
+				result = true
+				return false
+			}
+		}
+		return true
+	})
+	return result
 }
